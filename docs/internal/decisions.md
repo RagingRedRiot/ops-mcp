@@ -477,3 +477,144 @@ because `collected_at` is `btime` plus uptime. Within one batch all seven land
 inside a single remote loop of about a millisecond, against roughly four
 seconds spread across seven round trips — so batching narrows skew as well as
 latency.
+
+### 22. Container tools read cgroups; runtime knowledge is confined to enumeration — accepted
+
+`container_health` and `container_list` read cgroup v2 files. Health, limits
+and pressure are universal across Docker, podman and Kubernetes.
+
+Three reasons, in order of weight:
+
+* **cgroups are the enforcement layer, not a reporting layer.** `docker run
+  -m 512m --cpus=2`, a Kubernetes `resources.limits` block and `podman
+  --memory` all do the same thing: write cgroup files. Reading them back
+  therefore needs no runtime knowledge at all. Verified against a live
+  container — `cpu.max`, `cpu.weight`, `memory.max`, `memory.high`,
+  `memory.low`, `memory.min`, `memory.swap.max`, `pids.max` and `io.max` are
+  all present and readable.
+* **The health files are not container concepts.** Verified identical on
+  cgroups that have nothing to do with containers — an ordinary systemd
+  service, a user slice, `init.scope`. The runtime determines the *path* and
+  nothing else.
+* **PSI in cgroups is byte-identical to `/proc/pressure/*`.** `psi_avg` and
+  `psi_total` parse it unmodified, which is what `proc.rs`'s module doc
+  predicted before the use case existed.
+
+**What is not universal: enumeration.** Path layout differs by runtime *and* by
+cgroup driver. Only the first row below is verified; the rest are from
+documentation and should be confirmed against a real host before being relied
+on.
+
+| runtime | cgroup path |
+|---|---|
+| Docker, systemd driver | `system.slice/docker-<id>.scope` (verified) |
+| Docker, cgroupfs driver | `/sys/fs/cgroup/docker/<id>` |
+| podman rootful | `machine.slice/libpod-<id>.scope` |
+| podman rootless | `user.slice/user-<uid>.slice/user@<uid>.service/user.slice/libpod-<id>.scope` |
+| Kubernetes, systemd driver | `kubepods.slice/kubepods-<qos>.slice/kubepods-<qos>-pod<uid>.slice/cri-containerd-<id>.scope` |
+
+Kubernetes also adds a structural level the others lack: a pod slice containing
+several container scopes. Whether the tool reports pods, containers or both is
+**open**.
+
+Recorded limits, so a future session does not rediscover them:
+
+* **File availability follows controller delegation, not runtime.** Under
+  `user.slice`, where rootless podman lives, `io.stat` and `io.max` are absent
+  because the `io` controller is not delegated — while `io.pressure` is present,
+  because PSI is not controller-gated. Decision 18's rule 7 already covers this:
+  the field is simply absent, which is an answer rather than a failure.
+* **Container CPU pressure has a meaningful `full` line** where the host's is
+  permanently zero. Verified on both. `container_health` therefore reuses
+  `Pressure` for CPU where `system_health` uses `CpuPressure` — the type split
+  made in decision 18 turns out to be exactly the one the container case needs.
+* **`cpu.stat` is cumulative `usage_usec`, not jiffies**, so
+  `busy_fraction_since_boot` has no direct analogue.
+* **There is no per-cgroup load average.** `/proc/loadavg` is host-wide; that
+  field has no container version and should not be invented.
+* **Limits are string sentinels.** `memory.max` reads `max` and `cpu.max` reads
+  `max 100000` when unset. Normalizing that is decision 18's first rule applied
+  again — and unset is the common case, not the edge case.
+* **Throttling and OOM counters are the highest-value fields and are inert
+  without limits.** `nr_throttled` requires a CPU quota to move; `memory.events`
+  requires a memory limit. On a host that sets no limits the tool degrades to
+  memory consumption and pressure, which is still useful but not diagnostic.
+
+### 23. Identity is `comm`; process arguments and environment are never read — accepted
+
+A container's identity is the set of distinct `/proc/<pid>/comm` values in its
+cgroup. `ops-mcp` does not read `/proc/<pid>/cmdline`, and does not read
+`/proc/<pid>/environ`.
+
+**The prohibition is server-wide, not container-scoped.** It is recorded here
+because containers are where the question first arose, but `/proc/<pid>` is the
+same interface for every process on the machine — a container process is a host
+process in a namespace, and nothing about the namespace restricts what a reader
+on the host can see. No current tool reads per-process data at all, so the whole
+value of this decision is the constraint it places on future ones: a
+`process_list`-shaped tool answering "what is using the CPU" is exactly where a
+later session would reach for `cmdline` or `environ` as convenient identity.
+Measured on a real host, credential-shaped environment variables appeared in
+both container and non-container processes; the container ones held actual
+database passwords and API keys while the host ones happened to hold only
+socket and directory paths, but that is a fact about how that machine was
+configured and not a property to rely on. A systemd unit with an
+`Environment=` line puts a live secret in a host process immediately.
+
+* **Command lines carry credentials in practice, not in theory.** A scan of a
+  running container host found credential-shaped arguments on nine of its 156
+  processes, including a literal `--password` flag on a process inside a
+  container. Returning command lines would have moved a live credential into
+  model context on the first call.
+* **`argv[0]` is not a safe subset.** Processes rewrite it: Redis publishes
+  `redis-server *:6379` and PostgreSQL `postgres: io worker 0`. Anything a
+  process can write there, it can write a secret into.
+* **`comm` is structurally incapable of carrying a command line** — fifteen
+  characters, kernel-managed. It also proved *better* identity in practice,
+  reporting `uvicorn` where `argv[0]` reported `python3.12`.
+* **`environ` is prohibited outright, not merely unused.** It is strictly worse
+  than a command line, being where database passwords and API keys actually
+  live. Writing it down as a prohibition stops a future tool reaching for it as
+  a convenient identity source.
+
+**This generalizes decision 9.** That decision refuses SSH usernames, addresses
+and key paths. The rule underneath it is: `ops-mcp` returns *operational
+measurements*, never *process arguments or environment*. Stated that way it
+covers the cases nobody has enumerated yet.
+
+**Rejected: redacting known-sensitive flags.** A blocklist has to be complete to
+be safe and cannot be. `-p` means password to `mysql` and port to half a dozen
+other tools, and every new application invents its own spelling.
+
+### 24. Container name resolution is deferred to a separate tool — accepted
+
+`container_list` and `container_health` identify a container by cgroup path and
+`comm` set. Mapping that to a runtime-assigned name and image is a future tool,
+called only for containers already identified as worth investigating.
+
+* **It quarantines the only fragile part.** Name resolution is runtime-specific,
+  format-unstable and privilege-requiring: Docker keeps it in an undocumented
+  `config.v2.json`, podman in a BoltDB, and Kubernetes exposes only a pod UID in
+  the cgroup path with the human name behind the kubelet or API server.
+  Isolating it means the health tools never break when any of those change.
+* **Lazy resolution scales with faults, not inventory.** Resolving every name on
+  a large node is work proportional to the node; resolving the ones that need
+  attention is work proportional to the problem.
+* **Nothing about health needs a name.** Contention, throttling and OOM counts
+  are facts about a cgroup, and `comm` already answers "which one is the
+  database".
+
+Recorded limits:
+
+* **Container IDs are ephemeral.** An ID is stable while the container lives and
+  gone afterwards, so a name resolved in a later call may name something that no
+  longer exists — especially under an orchestrator that replaces workloads. The
+  schema must say so, the way `collected_at` says not to use it for interval
+  arithmetic.
+* **No verdict fields.** "Needs attention" is the model's conclusion drawn from
+  `throttled_usec`, `oom_kill` and pressure — not a boolean in the payload.
+  Decision 18 continues to hold here.
+
+**Rejected: resolving names eagerly in `container_list`.** It couples the
+universal tool to the fragile one and pays the cost on every call, for
+information that is only wanted about the exceptions.
