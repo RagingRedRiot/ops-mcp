@@ -1,4 +1,4 @@
-# ops-mcp — Current state
+# stethoscope-mcp — Current state
 
 > **Read this first.** It answers: what are we building, what has actually been
 > implemented, and what only *looks* implemented because it is described in
@@ -110,7 +110,7 @@ Unresolved; do not assume an answer has been chosen.
 
 1. **Interactive SSH authentication through a stdio MCP server.** If `ssh nas`
    needs a passphrase, an agent confirmation, or a hardware-key touch, where
-   does that prompt go? The MCP client owns the terminal, and `ops-mcp`'s
+   does that prompt go? The MCP client owns the terminal, and `stethoscope-mcp`'s
    stdio is the protocol channel. Options not yet evaluated: rely on a
    pre-warmed `ssh-agent`, `SSH_ASKPASS`, ControlMaster sockets the user opens
    out-of-band, or return a distinct "authentication required" result and let
@@ -134,7 +134,7 @@ Unresolved; do not assume an answer has been chosen.
    * **MCP elicitation may be the missing channel.** MCP lets a server request
      structured input from the user *through the client*, and `rmcp` ships an
      `elicitation` feature flag. That is plausibly how "target nas needs a
-     passphrase" reaches the user without `ops-mcp` ever handling a
+     passphrase" reaches the user without `stethoscope-mcp` ever handling a
      credential. Unverified in two respects: whether the clients we care about
      actually support elicitation, and — the harder problem — that `ssh`
      reads a passphrase from its controlling terminal, not stdin, so bridging
@@ -171,7 +171,7 @@ Unresolved; do not assume an answer has been chosen.
 
 6. **What `/proc/<pid>` may put into model context.** Not load-bearing yet —
    nothing reads per-process data — but it needs an answer before anything
-   does. Decision 9 says information available to the `ops-mcp` process is not
+   does. Decision 9 says information available to the `stethoscope-mcp` process is not
    automatically model-facing, and it was written about SSH usernames and key
    paths. `/proc/<pid>/cmdline` is a larger and far more accidental leak:
    command lines routinely carry `--password=`, tokens and connection strings,

@@ -41,7 +41,7 @@ use crate::guard;
 /// the signature too, and neither is decided.
 pub async fn read(path: &str) -> Result<String, ErrorData> {
     if let Err(denied) = guard::check(path) {
-        eprintln!("ops-mcp: refusing to read {path}: {denied}");
+        eprintln!("stethoscope-mcp: refusing to read {path}: {denied}");
         return Err(ErrorData::internal_error(
             "failed to read system information",
             None,
@@ -51,7 +51,7 @@ pub async fn read(path: &str) -> Result<String, ErrorData> {
         .await
         .map(|s| s.trim().to_owned())
         .map_err(|e| {
-            eprintln!("ops-mcp: failed to read {path}: {e}");
+            eprintln!("stethoscope-mcp: failed to read {path}: {e}");
             ErrorData::internal_error("failed to read system information", None)
         })
 }
@@ -62,14 +62,14 @@ pub async fn read(path: &str) -> Result<String, ErrorData> {
 /// compiled out.
 pub async fn read_optional(path: &str) -> Option<String> {
     if let Err(denied) = guard::check(path) {
-        eprintln!("ops-mcp: refusing to read {path}: {denied}");
+        eprintln!("stethoscope-mcp: refusing to read {path}: {denied}");
         return None;
     }
     match tokio::fs::read_to_string(path).await {
         Ok(text) => Some(text),
         Err(e) => {
             if e.kind() != std::io::ErrorKind::NotFound {
-                eprintln!("ops-mcp: failed to read {path}: {e}");
+                eprintln!("stethoscope-mcp: failed to read {path}: {e}");
             }
             None
         }
@@ -82,7 +82,7 @@ pub async fn read_optional(path: &str) -> Option<String> {
 /// These files are kernel-generated and their layouts are stable, so reaching
 /// here means something is genuinely wrong rather than merely unexpected.
 pub fn parse_error(path: &str, what: &str) -> ErrorData {
-    eprintln!("ops-mcp: could not parse {what} from {path}");
+    eprintln!("stethoscope-mcp: could not parse {what} from {path}");
     ErrorData::internal_error("failed to read system information", None)
 }
 

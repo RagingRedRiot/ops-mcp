@@ -283,7 +283,7 @@ async fn read_pressure() -> Option<PressureSet> {
 async fn read_psi<T>(path: &str, parse: fn(&str) -> Option<T>) -> Option<T> {
     let parsed = parse(&proc::read_optional(path).await?);
     if parsed.is_none() {
-        eprintln!("ops-mcp: unexpected layout in {path}; omitting it");
+        eprintln!("stethoscope-mcp: unexpected layout in {path}; omitting it");
     }
     parsed
 }
