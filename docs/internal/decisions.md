@@ -618,3 +618,73 @@ Recorded limits:
 **Rejected: resolving names eagerly in `container_list`.** It couples the
 universal tool to the fragile one and pays the cost on every call, for
 information that is only wanted about the exceptions.
+
+### 25. The read guard is an allowlist at the single read chokepoint — accepted
+
+`src/guard.rs` decides which paths this server may open. `proc::read` and
+`proc::read_optional` ask it first, and nothing else in the crate opens a file.
+Decision 23 said what must never be read; this is the mechanism that makes it so
+rather than a promise that it is.
+
+**An allowlist, not a denylist.** A denylist has to enumerate every dangerous
+file forever, and it loses outright to renaming: a symlink at `/tmp/x` pointing
+at `/proc/1/environ` has the basename `x` and passes any check on basenames. An
+allowlist rejects `/tmp/x` because it is not a shape this server reads. The
+first draft of this guard demonstrated the failure mode on itself — a basename
+denylist containing `io`, to catch `/proc/<pid>/io`, also blocked the legitimate
+`/proc/pressure/io`, and its own tests caught it. A narrow `FORBIDDEN` list
+remains underneath the allowlist as a backstop against careless widening.
+
+**Lexical normalization, not `canonicalize`.** `std::fs::canonicalize` resolves
+symlinks and `..` correctly, but requires the file to exist — verified — which
+would turn every legitimately absent optional file into a resolution failure
+instead of the "missing" answer decision 18 rule 7 depends on. Rejecting empty,
+`.` and `..` components is sufficient, because the server's paths never contain
+them, so their appearance is either a bug or an attempt to get around the
+function. That leaves symlinks unresolved and does not need to resolve them: a
+symlink can only reach a forbidden file by way of a path that is not in the
+allowlist.
+
+**Under `/proc/<pid>/`, only `comm`.** `status`, `stat` and `limits` are denied
+by omission — harmless, but unused, and the narrower rule is the one worth
+keeping.
+
+**Four layers, because a denial is always a programming error.** No path is
+model-controlled, so the compile-time and CI layers matter as much as the
+runtime check:
+
+| layer | catches |
+|---|---|
+| runtime allowlist | a read of any non-approved path, including future dynamic cgroup paths |
+| backstop denylist | a careless widening of the allowlist |
+| guard unit tests | regressions in the guard itself, including traversal and renaming evasions |
+| source-scan test | a forbidden path named as a literal in any other module |
+
+**CI flags edits to the guard.** `detect-guard-modifications` raises a PR notice
+whenever existing guard code or guard tests are edited or removed, adapted from
+a pattern in a sibling project. Pure additions do not trigger it, so adding
+tests stays frictionless. Verified against three simulated pull requests: adding
+a test posted no notice, deleting a denial assertion was flagged, and widening
+the allowlist was flagged.
+
+**Defense in depth, demonstrated rather than claimed.** Adding `/proc/1/environ`
+to the allowlist leaves it denied at runtime by the backstop, *and* fails the
+guard's own tests because they detect the contradiction, *and* raises the CI
+notice on the diff. Three independent layers have to be defeated together.
+
+Recorded limits:
+
+* **This guards programmer error, not an attacker — for now.** Every path in the
+  crate is a string literal today. That changes with container enumeration,
+  where cgroup directory listings produce the first constructed paths and
+  `cgroup.procs` produces the first paths built from file *contents*. The guard
+  is deliberately landed before that work rather than after it.
+* **Tests are inline `#[cfg(test)]`, not in `tests/`.** The crate is a binary
+  with no lib target, so integration tests cannot reach a private function, and
+  exposing the guard publicly to enable them would be a worse trade. Verified
+  that `#[cfg(test)]` costs nothing at runtime: release binaries built with and
+  without a test module are byte-identical.
+
+**Rejected: a `SafePath` newtype with a private constructor.** More machinery
+than two chokepoint functions justify. Worth revisiting if the read surface
+grows beyond them.

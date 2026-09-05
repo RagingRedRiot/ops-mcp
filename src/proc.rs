@@ -15,6 +15,8 @@
 
 use rmcp::ErrorData;
 
+use crate::guard;
+
 /// Read a kernel virtual file whole, trimmed.
 ///
 /// `tokio::fs` is not truly async — it hands the ordinary blocking read to
@@ -38,6 +40,13 @@ use rmcp::ErrorData;
 /// authentication and the failure semantics of an unreachable host would shape
 /// the signature too, and neither is decided.
 pub async fn read(path: &str) -> Result<String, ErrorData> {
+    if let Err(denied) = guard::check(path) {
+        eprintln!("ops-mcp: refusing to read {path}: {denied}");
+        return Err(ErrorData::internal_error(
+            "failed to read system information",
+            None,
+        ));
+    }
     tokio::fs::read_to_string(path)
         .await
         .map(|s| s.trim().to_owned())
@@ -52,6 +61,10 @@ pub async fn read(path: &str) -> Result<String, ErrorData> {
 /// `None` means the kernel does not provide it — an older kernel, or a feature
 /// compiled out.
 pub async fn read_optional(path: &str) -> Option<String> {
+    if let Err(denied) = guard::check(path) {
+        eprintln!("ops-mcp: refusing to read {path}: {denied}");
+        return None;
+    }
     match tokio::fs::read_to_string(path).await {
         Ok(text) => Some(text),
         Err(e) => {

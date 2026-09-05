@@ -12,6 +12,7 @@
 //! NOTE: stdout is the MCP transport. Never `println!` here. Anything
 //! diagnostic must go to stderr.
 
+mod guard;
 mod proc;
 mod system_health;
 mod system_info;

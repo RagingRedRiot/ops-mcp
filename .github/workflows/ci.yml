@@ -1,0 +1,172 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: cargo fmt --check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: cargo clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets --locked -- -D warnings
+
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked
+
+  smoke:
+    name: scripts/smoke.sh
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked
+      - run: ./scripts/smoke.sh
+
+  detect-guard-modifications:
+    name: Detect modifications to the read guard
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Diff protected paths vs base
+        id: diff
+        shell: bash
+        run: |
+          set -uo pipefail
+          BASE="${{ github.event.pull_request.base.sha }}"
+          REPORT="$RUNNER_TEMP/guard-mod-report.md"
+          : > "$REPORT"
+
+          # src/guard.rs is the whole read-path security control: the allowlist,
+          # the backstop denylist, and the tests that prove both. Any edit to it
+          # — implementation or test — is security-relevant and must be visible.
+          # tests/ is included so the check keeps working if that directory is
+          # ever added.
+          PROTECTED="src/guard.rs tests/"
+
+          # Modified, Deleted or Renamed against base. Pure additions are
+          # excluded, so adding a new test never raises the notice.
+          MODIFIED_FILES=$(git diff --diff-filter=MDR --name-only "$BASE...HEAD" -- $PROTECTED || true)
+
+          ANY=false
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            # Lines starting with a single '-', excluding the '---' file header.
+            DEL=$(git diff "$BASE...HEAD" -- "$f" | grep -c '^-[^-]' || true)
+            if [ "${DEL:-0}" -gt 0 ]; then
+              printf -- '- `%s` (%s line(s) removed or changed)\n' "$f" "$DEL" >> "$REPORT"
+              ANY=true
+            fi
+          done <<< "$MODIFIED_FILES"
+
+          {
+            if $ANY; then
+              echo "## :warning: The read guard was modified"
+              echo ""
+              cat "$REPORT"
+              echo ""
+              echo "\`src/guard.rs\` decides which paths this server may open. Widening its allowlist, narrowing its denylist, or weakening its tests changes what the server is permitted to read."
+            else
+              echo "## :white_check_mark: The read guard was not modified"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if $ANY; then
+            echo "modified=true" >> "$GITHUB_OUTPUT"
+            echo "report_file=$REPORT" >> "$GITHUB_OUTPUT"
+          else
+            echo "modified=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post, update, or delete PR comment
+        uses: actions/github-script@v7
+        env:
+          MODIFIED: ${{ steps.diff.outputs.modified }}
+          REPORT_FILE: ${{ steps.diff.outputs.report_file }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- guard-modification-detector -->';
+            const modified = process.env.MODIFIED === 'true';
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+
+            if (modified) {
+              const report = fs.readFileSync(process.env.REPORT_FILE, 'utf8');
+              const baseRef = process.env.BASE_REF;
+              const body = [
+                marker,
+                '## :warning: The read guard was modified',
+                '',
+                `The following protected files have removed or changed lines compared to \`${baseRef}\`:`,
+                '',
+                report.trimEnd(),
+                '',
+                '`src/guard.rs` is the only thing deciding which paths this server may open — the allowlist, the backstop denylist, and the tests that prove both. Adding a new test does not trigger this notice; editing or removing existing guard code or guard tests does.',
+                '',
+                'That can be entirely legitimate, such as admitting a new cgroup file for a new tool. It should be deliberate, and a reviewer should see it.',
+              ].join('\n');
+
+              if (existing) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: existing.id,
+                  body,
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body,
+                });
+              }
+            } else if (existing) {
+              // Rolled back in a later push; clear the notice.
+              await github.rest.issues.deleteComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+              });
+            }
