@@ -4,7 +4,8 @@ A local [MCP](https://modelcontextprotocol.io) server giving an AI assistant
 structured, read-only observability into a Linux machine — narrow, named
 capabilities instead of shell access.
 
-**Status: early. v0.1 in progress.** One tool exists (`system_info`).
+**Status: early. v0.1 in progress.** Two tools exist: `system_info` and
+`system_health`.
 This is a learning project, built deliberately over multiple sessions.
 
 ## Design

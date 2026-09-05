@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 rmcp = { version = "3.2", default-features = false, features = ["server", "macros", "schemars", "transport-io"] }
 serde = { version = "1.0.229", features = ["derive"] }
 tokio = { version = "1.53.1", default-features = false, features = ["rt-multi-thread", "macros", "io-std", "fs"] }

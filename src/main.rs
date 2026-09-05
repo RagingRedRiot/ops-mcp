@@ -1,45 +1,60 @@
-//! ops-mcp — a local stdio MCP server providing constrained, read-only
-//! observability into the machine it runs on.
+//! ops-mcp — a local stdio MCP server providing constrained, read-only observability.
 //!
 //! See `docs/internal/` for the architecture and decision log. The single
 //! most important rule: this server gives the model *capabilities*, never
 //! arbitrary command execution.
 //!
+//! This file is deliberately the whole model-facing surface: every tool the
+//! server exposes is declared here, and the bodies do nothing but validate the
+//! target and delegate. You can read one short file and enumerate exactly what
+//! this server can do.
+//!
 //! NOTE: stdout is the MCP transport. Never `println!` here. Anything
 //! diagnostic must go to stderr.
+
+mod proc;
+mod system_health;
+mod system_info;
 
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
 use rmcp::transport::stdio;
 use rmcp::{ErrorData, ServerHandler, ServiceExt, schemars, tool, tool_handler, tool_router};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-/// The only target that exists today. Remote aliases arrive in v0.2, sourced
-/// from the user's SSH config rather than from anything hardcoded here.
+use system_health::SystemHealth;
+use system_info::SystemInfo;
+
+/// The only target that exists today.
 const LOCAL_TARGET: &str = "local";
 
+/// Every tool takes the same required `target`, so they share
+/// one parameter type and therefore one input schema.
 #[derive(Deserialize, schemars::JsonSchema)]
-struct SystemInfoParams {
-    /// Machine to describe. Only "local" is available today; remote targets
-    /// arrive with v0.2 SSH support.
+struct TargetParams {
+    /// Machine to act on. Only "local" is available today.
     target: String,
 }
 
-/// Normalized system identity for a target.
+/// Reject an alias that names no target we know.
 ///
-/// The shape is intended to be identical for local and remote targets — how
-/// the values were collected is an implementation detail the model does not
-/// see. The field set is deliberately small: it exists to prove the MCP
-/// plumbing, not to be a complete inventory.
-#[derive(Serialize, schemars::JsonSchema)]
-struct SystemInfo {
-    /// Echoes the requested target, so a response is self-describing when
-    /// several targets are queried.
-    target: String,
-    hostname: String,
-    kernel_release: String,
-    os: &'static str,
-    arch: &'static str,
+/// An unknown alias is a malformed request, not an unreachable machine, so it
+/// is `invalid_params`.
+///
+/// This function is the entire target mechanism: a string compared against one
+/// constant. It is deliberately not a target type, trait, or registry — where
+/// that seam belongs cannot be judged until a real remote implementation
+/// pushes on it. It is nonetheless the natural home for dispatch once there is
+/// more than one target to route to; today there is nothing to route, only
+/// something to reject.
+fn check_target(target: &str) -> Result<(), ErrorData> {
+    if target == LOCAL_TARGET {
+        return Ok(());
+    }
+    Err(ErrorData::invalid_params(
+        format!("unknown target {target:?}; the only available target is \"local\""),
+        None,
+    ))
 }
 
 /// The server itself holds no state. `#[tool_handler]` builds the tool router
@@ -50,51 +65,27 @@ struct OpsMcp;
 impl OpsMcp {
     #[tool(
         name = "system_info",
-        description = "Basic identity of a target machine: hostname, kernel release, OS and CPU architecture. Read-only. The only target currently available is \"local\"."
+        description = "Basic identity of a target machine: hostname, kernel release, OS and CPU architecture."
     )]
     async fn system_info(
         &self,
-        Parameters(SystemInfoParams { target }): Parameters<SystemInfoParams>,
+        Parameters(TargetParams { target }): Parameters<TargetParams>,
     ) -> Result<Json<SystemInfo>, ErrorData> {
-        // Unknown alias is a malformed request, not an unreachable machine.
-        // Reporting reachability is a separate question, still open, that
-        // arrives with remote targets.
-        if target != LOCAL_TARGET {
-            return Err(ErrorData::invalid_params(
-                format!("unknown target {target:?}; the only available target is \"local\""),
-                None,
-            ));
-        }
-
-        Ok(Json(SystemInfo {
-            target,
-            hostname: read_proc("/proc/sys/kernel/hostname").await?,
-            kernel_release: read_proc("/proc/sys/kernel/osrelease").await?,
-            os: std::env::consts::OS,
-            arch: std::env::consts::ARCH,
-        }))
+        check_target(&target)?;
+        Ok(Json(system_info::collect(target).await?))
     }
-}
 
-/// Read a single-line `/proc` value.
-///
-/// `tokio::fs` is not truly async — it hands the ordinary blocking read to
-/// `spawn_blocking`. That is the point: the wait, however brief, lands on the
-/// blocking pool instead of an async worker thread, so no tool can stall the
-/// runtime for the requests running alongside it. Reads here are microseconds,
-/// but the policy is what matters once tools do heavier I/O.
-///
-/// The underlying io::Error is intentionally not forwarded to the model: it
-/// can carry local paths and details the model has no need for. Detail belongs
-/// in operator-facing logs (not yet implemented), not in model context.
-async fn read_proc(path: &str) -> Result<String, ErrorData> {
-    tokio::fs::read_to_string(path)
-        .await
-        .map(|s| s.trim().to_owned())
-        .map_err(|e| {
-            eprintln!("ops-mcp: failed to read {path}: {e}");
-            ErrorData::internal_error("failed to read system information", None)
-        })
+    #[tool(
+        name = "system_health",
+        description = "Resource-contention health for a target machine: load average with CPU count, memory availability, swap, and kernel pressure-stall figures for CPU, memory and I/O. Raw numbers only, with no thresholds or verdicts applied; the output schema describes how to read them."
+    )]
+    async fn system_health(
+        &self,
+        Parameters(TargetParams { target }): Parameters<TargetParams>,
+    ) -> Result<Json<SystemHealth>, ErrorData> {
+        check_target(&target)?;
+        Ok(Json(system_health::collect(target).await?))
+    }
 }
 
 #[tool_handler]
