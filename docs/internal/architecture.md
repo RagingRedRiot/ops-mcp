@@ -152,6 +152,96 @@ match blocks, and precedence rules. Do not prematurely solve them.
 
 `Include` may eventually matter for discovery. It is not a bootstrap concern.
 
+### Batched retrieval and the frame format
+
+One tool call is one SSH invocation. The remote command reads every file the
+tool needs and writes them as a stream of self-describing frames. Decision 20
+covers why this is plaintext and length-prefixed rather than encoded;
+decision 21 covers why frames carry their path. This section is the mechanism,
+recorded so it is not re-derived at implementation time.
+
+**Wire format.** A frame is a header line, then — for `FILE` only — exactly
+the number of bytes the header announces, then a single newline:
+
+```text
+FILE <path> <byte-count>\n
+<byte-count bytes, verbatim>\n
+MISSING <path>\n
+```
+
+**Reader.** The cursor arithmetic is the whole algorithm. Content is never
+inspected and never scanned:
+
+```text
+cursor = 0
+while cursor < input.len():
+    eol = index of b'\n' at or after cursor        # no newline left -> stop
+    header = input[cursor .. eol]
+
+    "FILE <path> <n>":
+        start = eol + 1
+        end   = start + n
+        if end + 1 > input.len(): -> truncated, stop
+        if input[end] != b'\n':  -> length disagreement, fail the batch
+        emit (path, Present(input[start .. end]))
+        cursor = end + 1
+
+    "MISSING <path>":
+        emit (path, Missing)
+        cursor = eol + 1
+
+    anything else:
+        skip the line                              # rc-file / motd noise
+        cursor = eol + 1
+```
+
+**Why it cannot be confused by content.** The reader takes `n` bytes because
+the header said `n`, so a file whose content happens to contain a line reading
+`FILE /proc/evil 999` is returned as content and never becomes a frame. This is
+the property a delimiter cannot have, and it is worth preserving in any future
+variant of the format.
+
+**The framing is self-checking.** After a well-formed stream the cursor lands
+exactly on `input.len()`. Any other outcome means the stream is corrupt, and it
+is detectable at parse time rather than as implausible values several layers
+higher.
+
+**Invariants for the implementation:**
+
+* Slice **bytes**, not characters. `wc -c` counts bytes, and `/proc/version`
+  can carry non-ASCII in a compiler version string. Convert to UTF-8 after
+  slicing, never before.
+* Verify the byte following the content is `\n`. It is the cheapest available
+  integrity check on the announced length, and everything after a mismatch is
+  misaligned.
+* Never pre-allocate from `n`. Bound it against the bytes actually remaining,
+  so a corrupt header cannot request an enormous allocation.
+* Do not require the response to be complete. Frames that arrived are usable
+  whether or not later ones did.
+
+**Behavior on malformed input**, verified by implementing the reader above
+verbatim and running it against each case:
+
+| input | result |
+|---|---|
+| well-formed batch (7 files) | 7 frames, cursor lands exactly on `len` |
+| content containing a fake `FILE` header | returned as content; no phantom frame |
+| junk lines before/after payload | junk skipped, all frames recovered |
+| truncated mid-content | completed frames kept, stream flagged incomplete |
+| header length disagrees with content | batch rejected |
+| absurd length in a corrupt header | no allocation, no panic, stream flagged incomplete |
+| empty input | zero frames; caller sees every path absent |
+
+**Three outcomes, matching the local reader.** The map returned to the tool
+answers each requested path in one of three ways, which is the same three-way
+result `proc::read` and `proc::read_optional` already produce locally:
+
+| outcome | required file (`read`) | optional file (`read_optional`) |
+|---|---|---|
+| `Present(bytes)` | content | `Some(content)` |
+| `Missing` | error: file absent | `None` |
+| absent from response | error: read failed | `None` |
+
 ## The model-visible information boundary
 
 A target may internally resolve to:
