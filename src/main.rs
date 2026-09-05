@@ -1,4 +1,4 @@
-//! ops-mcp — a local stdio MCP server providing constrained, read-only observability.
+//! stethoscope-mcp — a local stdio MCP server providing constrained, read-only observability.
 //!
 //! See `docs/internal/` for the architecture and decision log. The single
 //! most important rule: this server gives the model *capabilities*, never
@@ -60,10 +60,10 @@ fn check_target(target: &str) -> Result<(), ErrorData> {
 
 /// The server itself holds no state. `#[tool_handler]` builds the tool router
 /// on demand, so there is nothing to construct or carry.
-struct OpsMcp;
+struct StethoscopeMcp;
 
 #[tool_router]
-impl OpsMcp {
+impl StethoscopeMcp {
     #[tool(
         name = "system_info",
         description = "Basic identity of a target machine: hostname, kernel release, OS and CPU architecture."
@@ -90,11 +90,12 @@ impl OpsMcp {
 }
 
 #[tool_handler]
-impl ServerHandler for OpsMcp {
+impl ServerHandler for StethoscopeMcp {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(
-                Implementation::new("ops-mcp", env!("CARGO_PKG_VERSION")).with_title("ops-mcp"),
+                Implementation::new("stethoscope-mcp", env!("CARGO_PKG_VERSION"))
+                    .with_title("stethoscope-mcp"),
             )
             .with_instructions(
                 "Read-only observability for Linux machines. Tools take a target \
@@ -107,7 +108,7 @@ impl ServerHandler for OpsMcp {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let service = OpsMcp.serve(stdio()).await?;
+    let service = StethoscopeMcp.serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
 }

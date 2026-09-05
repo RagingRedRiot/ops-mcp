@@ -1,11 +1,11 @@
-# ops-mcp — Architecture
+# stethoscope-mcp — Architecture
 
 > Internal working document. This is design memory for the humans and Claude
 > sessions working on this project, not public project documentation.
 
 ## Purpose
 
-`ops-mcp` is a local MCP server that gives an AI assistant structured,
+`stethoscope-mcp` is a local MCP server that gives an AI assistant structured,
 constrained observability into the user's machines — the local Linux machine
 first, and eventually remote Linux machines reachable over SSH.
 
@@ -14,7 +14,7 @@ The motivating use case:
 > "Why isn't this service/container/application working?"
 
 Today answering that means the user repeatedly explains their environment and
-hand-runs commands on the model's behalf, pasting output back. `ops-mcp` lets
+hand-runs commands on the model's behalf, pasting output back. `stethoscope-mcp` lets
 the assistant gather that operational information directly, through narrowly
 defined tools that return normalized, structured results.
 
@@ -22,7 +22,7 @@ defined tools that return normalized, structured results.
 
 > **Give the model capabilities, not credentials or arbitrary machine access.**
 
-`ops-mcp` is a security boundary between the model and the operating
+`stethoscope-mcp` is a security boundary between the model and the operating
 environment. The model asks for a *named operation on a named target*:
 
 ```text
@@ -36,8 +36,8 @@ execute_shell(command)          # rejected
 execute_ssh_command(target, cmd) # rejected
 ```
 
-`ops-mcp` may internally shell out to OS utilities or OpenSSH. The distinction
-that matters is **who chooses the command**: trusted `ops-mcp` code constructs
+`stethoscope-mcp` may internally shell out to OS utilities or OpenSSH. The distinction
+that matters is **who chooses the command**: trusted `stethoscope-mcp` code constructs
 it, never the model.
 
 ### Why arbitrary shell is explicitly rejected
@@ -48,7 +48,7 @@ model's own judgment and whatever the MCP client asks the user to approve.
 It also produces unstructured text the model has to parse and guess at.
 
 Refusing it is what makes the rest of the design meaningful. A narrow tool is
-auditable: you can read `ops-mcp`'s source and enumerate exactly what it can
+auditable: you can read `stethoscope-mcp`'s source and enumerate exactly what it can
 do. That property is worth more than the convenience of a general escape
 hatch, and it is lost permanently the moment one is added.
 
@@ -60,23 +60,23 @@ Claude / MCP client
        MCP (stdio)
         |
         v
-     ops-mcp
+     stethoscope-mcp
         |
         v
  local operating system
 ```
 
-Launched by a local MCP client, `ops-mcp` runs as the OS user who launched it,
+Launched by a local MCP client, `stethoscope-mcp` runs as the OS user who launched it,
 and inherits exactly that user's permissions. This is intentional. v0.1
 deliberately does **not** introduce:
 
 * root privileges
-* a dedicated `ops-mcp` system account
+* a dedicated `stethoscope-mcp` system account
 * a daemon or privileged service
 * containers
 * any additional credential storage
 
-If the user cannot read something, neither can `ops-mcp`, and that is the
+If the user cannot read something, neither can `stethoscope-mcp`, and that is the
 correct behavior — not a limitation to engineer around.
 
 v0.1 is local, read-only inspection only. No mutations. No SSH.
@@ -94,7 +94,7 @@ Claude
    |
    | MCP
    v
-ops-mcp
+stethoscope-mcp
    |
    | constrained operation
    v
@@ -107,7 +107,7 @@ remote host
 
 ### OpenSSH delegation
 
-`ops-mcp` delegates SSH connectivity and authentication to the system OpenSSH
+`stethoscope-mcp` delegates SSH connectivity and authentication to the system OpenSSH
 client. It does **not** become an SSH credential manager, and does not store
 SSH passwords, private-key passphrases, or equivalent secrets.
 
@@ -124,11 +124,11 @@ MCP server is an open question — see `current-state.md`.)
 The division of responsibility:
 
 > **OpenSSH owns connection and authentication.**
-> **`ops-mcp` owns model-facing authorization and capabilities.**
+> **`stethoscope-mcp` owns model-facing authorization and capabilities.**
 
 ### SSH config as target inventory
 
-There is deliberately no `ops-mcp` target configuration file. The user's
+There is deliberately no `stethoscope-mcp` target configuration file. The user's
 existing OpenSSH configuration is the eventual canonical remote inventory —
 it already exists, the user already maintains it, and duplicating it would
 create a second source of truth that drifts.
@@ -141,11 +141,11 @@ Host nas
     HostName 192.168.1.50
     User some-user
     IdentityFile ~/.ssh/some-key
-    Tag ops-mcp
+    Tag stethoscope-mcp
 ```
 
 If discovery is implemented, it stays deliberately narrow: find literal `Host`
-aliases whose applicable entry is tagged `ops-mcp`, and leave every other bit
+aliases whose applicable entry is tagged `stethoscope-mcp`, and leave every other bit
 of SSH semantics to OpenSSH. We are not writing an SSH configuration
 implementation — OpenSSH already owns those semantics, including wildcards,
 match blocks, and precedence rules. Do not prematurely solve them.
@@ -265,7 +265,7 @@ The model needs to see only:
 ```
 
 Usernames, addresses, ports, key paths, and ProxyJump topology stay
-implementation-private. OpenSSH resolves them when `ops-mcp` eventually
+implementation-private. OpenSSH resolves them when `stethoscope-mcp` eventually
 invokes the equivalent of `ssh nas <trusted operation>`.
 
 Errors respect the same boundary. Prefer:
@@ -279,7 +279,7 @@ Detailed diagnostics belong in local logs intended for the human operator.
 
 The general rule:
 
-> **Information available to the `ops-mcp` process is not automatically
+> **Information available to the `stethoscope-mcp` process is not automatically
 > information that should enter model context.**
 
 This already applies locally: `read_proc` in `src/main.rs` logs the underlying
@@ -292,13 +292,13 @@ The effective permission model is a conjunction — defense in depth:
 ```text
   User's OS permissions
     AND user's SSH permissions
-    AND target explicitly opted into ops-mcp
-    AND operation explicitly implemented/allowed by ops-mcp
+    AND target explicitly opted into stethoscope-mcp
+    AND operation explicitly implemented/allowed by stethoscope-mcp
   = capability available to the AI
 ```
 
 Possession of SSH access alone does not imply AI authorization. Opting a
-machine into `ops-mcp` does not imply arbitrary command execution on it.
+machine into `stethoscope-mcp` does not imply arbitrary command execution on it.
 
 ## Local/remote normalization
 
@@ -339,7 +339,7 @@ deliberately not a target type, trait, or registry.
 | Milestone | Scope | Status |
 |---|---|---|
 | v0.1 | Local, read-only inspection | in progress — one tool exists |
-| v0.2 | Remote targets via user's OpenSSH; `Tag ops-mcp` discovery | not started |
+| v0.2 | Remote targets via user's OpenSSH; `Tag stethoscope-mcp` discovery | not started |
 | v0.3 | Narrowly scoped mutations, after an explicit security design discussion | not started, deliberately |
 
 v0.3 (restart an allowlisted container or service) must not begin as a

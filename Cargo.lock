@@ -313,16 +313,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
-name = "ops-mcp"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "rmcp",
- "serde",
- "tokio",
-]
-
-[[package]]
 name = "pastey"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -510,6 +500,16 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
+
+[[package]]
+name = "stethoscope-mcp"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "rmcp",
+ "serde",
+ "tokio",
+]
 
 [[package]]
 name = "strsim"

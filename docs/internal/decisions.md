@@ -1,4 +1,4 @@
-# ops-mcp — Decision log
+# stethoscope-mcp — Decision log
 
 > Lightweight ADR log. The point is to stop a future session — or a future us —
 > from casually reversing a decision without understanding why it was made.
@@ -19,7 +19,7 @@ install, and a type system that makes "what exactly can this tool do" legible.
 
 ### 2. Local stdio MCP server first — accepted
 
-The MCP client spawns `ops-mcp` as a subprocess and talks JSON-RPC over
+The MCP client spawns `stethoscope-mcp` as a subprocess and talks JSON-RPC over
 stdin/stdout. No network listener, no ports, no HTTP server, no auth layer.
 The process runs as the invoking user and inherits their permissions.
 
@@ -40,9 +40,9 @@ mean designing the security model under pressure from a feature.
 No `execute_shell(command)`, no `execute_ssh_command(target, command)`, no
 tool that accepts a command, command fragment, or shell string from the model.
 
-`ops-mcp` may run OS utilities internally, but *trusted code selects and
+`stethoscope-mcp` may run OS utilities internally, but *trusted code selects and
 constructs the command*. This is the decision the entire project rests on: it
-is what makes `ops-mcp` a boundary rather than a transport. Adding a general
+is what makes `stethoscope-mcp` a boundary rather than a transport. Adding a general
 escape hatch would nullify decisions 8, 9 and 12 at the same time, and the
 narrow tools would become pointless overhead around it.
 
@@ -51,7 +51,7 @@ operation, not to add a general one.
 
 ### 5. Use the system OpenSSH client, not an in-process SSH library — accepted
 
-When remote support arrives, `ops-mcp` will invoke the user's OpenSSH client
+When remote support arrives, `stethoscope-mcp` will invoke the user's OpenSSH client
 rather than link an SSH implementation.
 
 OpenSSH already correctly implements config resolution, host-key verification,
@@ -61,7 +61,7 @@ SSH behavior, and taking on a credential-handling role we do not want.
 
 ### 6. Do not require passwordless SSH keys — accepted
 
-A tempting shortcut is "just set up a passwordless key for ops-mcp". Rejected:
+A tempting shortcut is "just set up a passwordless key for stethoscope-mcp". Rejected:
 it degrades the user's security posture to make our implementation easier, and
 it creates exactly the standing unattended credential we are trying not to
 have.
@@ -76,19 +76,19 @@ stdio MCP server; it is a real problem and it is not a reason to reverse this.
 Remote targets come from `~/.ssh/config`, which the user already maintains.
 No separate host list to keep in sync, nothing to duplicate, nothing to drift.
 
-### 8. `Tag ops-mcp` is the explicit opt-in — accepted
+### 8. `Tag stethoscope-mcp` is the explicit opt-in — accepted
 
 Having SSH access to a host does not mean the model may inspect it. Only hosts
-whose applicable config entry carries `Tag ops-mcp` are eligible.
+whose applicable config entry carries `Tag stethoscope-mcp` are eligible.
 
-Opt-in, not opt-out: adding a host to `ops-mcp`'s reach must be a deliberate
+Opt-in, not opt-out: adding a host to `stethoscope-mcp`'s reach must be a deliberate
 act by the user, and it lives in the same file they already edit. Reading the
 whole config and exposing everything in it would silently hand the model the
 user's entire infrastructure the first time they run the server.
 
 ### 9. Do not expose SSH usernames, addresses, or key paths to the model — accepted
 
-The `ops-mcp` process can see these; that does not make them model-facing
+The `stethoscope-mcp` process can see these; that does not make them model-facing
 data. The model gets the target alias and what it can do. Errors are
 normalized (`"authentication_failed"`), not raw SSH diagnostics.
 
@@ -97,7 +97,7 @@ copied, summarized, and persisted in places the user did not choose; the
 information boundary should be drawn at the point of production, not left to
 downstream handling.
 
-### 10. No `ops-mcp` target config file unless a concrete requirement appears — accepted
+### 10. No `stethoscope-mcp` target config file unless a concrete requirement appears — accepted
 
 We are not creating a config format on speculation. If a real requirement
 emerges that SSH config genuinely cannot express, revisit *then*, with the
@@ -334,7 +334,7 @@ What the timestamp actually answers:
 * **Correlation with external evidence**, such as a log line's timestamp.
 
 **Boot time plus uptime, not `SystemTime::now()`.** The value must be the
-*target's* clock, not `ops-mcp`'s, or it is a claim about a machine whose clock
+*target's* clock, not `stethoscope-mcp`'s, or it is a claim about a machine whose clock
 was never consulted. `btime` is in `/proc/stat`, which `system_health` already
 reads, so this costs no extra read and stays a pure file parse that will work
 unchanged over SSH (decision 17). Verified exact against `date` on the
@@ -346,7 +346,7 @@ A wrong clock on the target produces a wrong `collected_at`. That is
 information about the target, not a defect, and the field documentation says
 so — skew between hosts is itself an operational problem worth seeing.
 
-**Rejected: having `ops-mcp` compute the delta itself.** A "stall since your
+**Rejected: having `stethoscope-mcp` compute the delta itself.** A "stall since your
 last call" field would require the server to remember the previous reading.
 That makes it stateful, the state would be per-session so two clients would get
 different answers to the same question, and it would silently choose a
@@ -543,7 +543,7 @@ Recorded limits, so a future session does not rediscover them:
 ### 23. Identity is `comm`; process arguments and environment are never read — accepted
 
 A container's identity is the set of distinct `/proc/<pid>/comm` values in its
-cgroup. `ops-mcp` does not read `/proc/<pid>/cmdline`, and does not read
+cgroup. `stethoscope-mcp` does not read `/proc/<pid>/cmdline`, and does not read
 `/proc/<pid>/environ`.
 
 **The prohibition is server-wide, not container-scoped.** It is recorded here
@@ -578,7 +578,7 @@ configured and not a property to rely on. A systemd unit with an
   a convenient identity source.
 
 **This generalizes decision 9.** That decision refuses SSH usernames, addresses
-and key paths. The rule underneath it is: `ops-mcp` returns *operational
+and key paths. The rule underneath it is: `stethoscope-mcp` returns *operational
 measurements*, never *process arguments or environment*. Stated that way it
 covers the cases nobody has enumerated yet.
 

@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
-# smoke.sh — drive ops-mcp over stdio with real JSON-RPC and check the replies.
+# smoke.sh — drive stethoscope-mcp over stdio with real JSON-RPC and check the replies.
 #
 # No MCP client required. A stdio MCP server is just a process that reads
 # newline-delimited JSON-RPC on stdin and writes it on stdout, so a pipe is a
 # perfectly legitimate client. Needs jq; nothing else.
 #
-# Usage: scripts/smoke.sh [path-to-binary]     (default: target/debug/ops-mcp)
+# Usage: scripts/smoke.sh [path-to-binary]     (default: target/debug/stethoscope-mcp)
 
 set -euo pipefail
 
-BIN="${1:-target/debug/ops-mcp}"
+BIN="${1:-target/debug/stethoscope-mcp}"
 [ -x "$BIN" ] || { echo "no executable at '$BIN' — run 'cargo build' first" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "smoke.sh needs jq" >&2; exit 1; }
 
@@ -39,8 +39,8 @@ check() { # check <label> <actual> <expected>
 
 echo "smoke: $BIN"
 
-check "server identifies as ops-mcp" \
-    "$(reply 1 | jq -r '.result.serverInfo.name')" "ops-mcp"
+check "server identifies as stethoscope-mcp" \
+    "$(reply 1 | jq -r '.result.serverInfo.name')" "stethoscope-mcp"
 
 check "advertises both tools" \
     "$(reply 2 | jq -r '[.result.tools[].name] | sort | join(",")')" "system_health,system_info"

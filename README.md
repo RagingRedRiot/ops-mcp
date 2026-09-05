@@ -1,4 +1,4 @@
-# ops-mcp
+# stethoscope-mcp
 
 A local [MCP](https://modelcontextprotocol.io) server giving an AI assistant
 structured, read-only observability into a Linux machine — narrow, named
@@ -29,5 +29,5 @@ as working memory rather than polished docs:
 cargo build --release
 ```
 
-`ops-mcp` speaks MCP over stdio and is meant to be spawned by an MCP client.
+`stethoscope-mcp` speaks MCP over stdio and is meant to be spawned by an MCP client.
 It runs as the user who launches it and has exactly that user's permissions.
