@@ -76,6 +76,117 @@ pub async fn read_optional(path: &str) -> Option<String> {
     }
 }
 
+/// List the subdirectories of a kernel virtual directory.
+///
+/// Only the cgroup tree is listable — see [`guard::check_dir`]. `None` means the
+/// directory is absent or unreadable, which is an ordinary answer on a machine
+/// with no cgroup controllers delegated where the caller asked anyway.
+///
+/// Returns full paths rather than names so the caller cannot accidentally
+/// rebuild one by string concatenation and get it wrong.
+pub async fn read_dir(path: &str) -> Option<Vec<String>> {
+    if let Err(denied) = guard::check_dir(path) {
+        eprintln!("stethoscope-mcp: refusing to list {path}: {denied}");
+        return None;
+    }
+    let mut entries = tokio::fs::read_dir(path).await.ok()?;
+    let mut out = Vec::new();
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        // Only directories: a cgroup is a directory, and its files are read by
+        // name rather than discovered.
+        if entry.file_type().await.is_ok_and(|t| t.is_dir())
+            && let Some(p) = entry.path().to_str()
+        {
+            out.push(p.to_owned());
+        }
+    }
+    Some(out)
+}
+
+/// The target's own wall clock, as RFC 3339 in UTC.
+///
+/// Boot time plus uptime. Formatted without a fractional part because `btime`
+/// is only recorded to the second, and implying more precision than the source
+/// has would be its own small lie.
+pub fn wall_clock(btime: u64, uptime_seconds: f64) -> Option<String> {
+    let epoch_seconds = i64::try_from(btime)
+        .ok()?
+        .checked_add(uptime_seconds as i64)?;
+    Some(
+        chrono::DateTime::from_timestamp(epoch_seconds, 0)?
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    )
+}
+
+/// Format an epoch second as RFC 3339 in UTC, for a caller that already has one.
+pub fn wall_clock_from(epoch_seconds: i64) -> String {
+    chrono::DateTime::from_timestamp(epoch_seconds, 0)
+        .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .unwrap_or_default()
+}
+
+/// Read the target's clock for a tool that has no other reason to touch
+/// `/proc/stat` and `/proc/uptime`.
+///
+/// `system_health` reads both files for their own sake and calls
+/// [`wall_clock`] directly; the container tools need only the timestamp, so the
+/// two reads are done here rather than repeated at every call site.
+pub async fn collected_at() -> Result<String, ErrorData> {
+    let epoch = target_now().await?;
+    chrono::DateTime::from_timestamp(epoch, 0)
+        .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .ok_or_else(|| parse_error("/proc/stat", "boot time out of range"))
+}
+
+/// The target's own idea of the current time, as seconds since the epoch.
+///
+/// Boot time plus uptime, so it is the *target's* clock rather than this
+/// server's — which is what lets it be differenced against a file timestamp
+/// from the same machine, and what keeps it correct once the reads happen over
+/// SSH (decision 19).
+pub async fn target_now() -> Result<i64, ErrorData> {
+    let uptime_raw = read("/proc/uptime").await?;
+    let uptime: f64 = field(
+        uptime_raw.split_whitespace().next(),
+        "/proc/uptime",
+        "uptime",
+    )?;
+    let stat = read("/proc/stat").await?;
+    let btime = stat_btime(&stat).ok_or_else(|| parse_error("/proc/stat", "btime"))?;
+    i64::try_from(btime)
+        .ok()
+        .and_then(|b| b.checked_add(uptime as i64))
+        .ok_or_else(|| parse_error("/proc/stat", "boot time out of range"))
+}
+
+/// Modification time of a cgroup directory, as seconds since the epoch.
+///
+/// A cgroup directory is created when a container's processes start and removed
+/// when they exit — verified for both Docker and podman, where stopping a
+/// container deletes the directory and starting it again recreates it with the
+/// same container ID and a fresh timestamp. So this is when the *current run*
+/// began rather than when the container was created, and it is the denominator
+/// the cumulative `*_total_us` figures need: those counters live in this same
+/// directory and reset with it, so the two always share an origin.
+///
+/// Guarded by [`guard::check_dir`] rather than by a rule of its own. This reads
+/// metadata about a directory the server may already enumerate, which reveals
+/// strictly less than the enumeration itself does.
+pub async fn dir_mtime(path: &str) -> Option<i64> {
+    if let Err(denied) = guard::check_dir(path) {
+        eprintln!("stethoscope-mcp: refusing to stat {path}: {denied}");
+        return None;
+    }
+    let meta = tokio::fs::metadata(path).await.ok()?;
+    let secs = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    i64::try_from(secs).ok()
+}
+
 /// Report a malformed file the way a failed read is reported: detail to stderr
 /// for the operator, a flat message to the model.
 ///

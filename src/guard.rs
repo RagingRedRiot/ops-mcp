@@ -111,8 +111,12 @@ impl std::fmt::Display for Denied {
     }
 }
 
-/// Decide whether this server may open `path`.
-pub fn check(path: &str) -> Result<(), Denied> {
+/// Split an absolute path into components, rejecting anything malformed.
+///
+/// Empty, `.` and `..` components are refused rather than resolved: the
+/// server's paths never contain them, so their appearance is either a bug or an
+/// attempt to get around this module.
+fn components(path: &str) -> Result<Vec<&str>, Denied> {
     if !path.starts_with('/') {
         return Err(Denied::NotAbsolute);
     }
@@ -123,6 +127,34 @@ pub fn check(path: &str) -> Result<(), Denied> {
     {
         return Err(Denied::BadComponent);
     }
+    Ok(parts)
+}
+
+/// The one directory tree this server may enumerate.
+///
+/// Container discovery has to walk the cgroup hierarchy because those paths are
+/// not knowable in advance — they are named for container IDs the server has
+/// never seen. Nothing else needs listing: process IDs come from `cgroup.procs`,
+/// which is an ordinary file read.
+const LISTABLE_ROOT: &str = "/sys/fs/cgroup";
+
+/// Decide whether this server may enumerate `path` as a directory.
+///
+/// Listing is a separate capability from reading, and a far narrower one:
+/// [`check`] admits files in several places, this admits directories in exactly
+/// one tree. Discovering a path here does not make it readable — every file the
+/// walk turns up is still put through [`check`] before it is opened.
+pub fn check_dir(path: &str) -> Result<(), Denied> {
+    components(path)?;
+    match path.strip_prefix(LISTABLE_ROOT) {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => Ok(()),
+        _ => Err(Denied::NotAllowed),
+    }
+}
+
+/// Decide whether this server may open `path`.
+pub fn check(path: &str) -> Result<(), Denied> {
+    let parts = components(path)?;
     // `parts` cannot be empty: splitting a non-empty string always yields one
     // element, and an empty first element was rejected above.
     let base = *parts.last().expect("path has at least one component");
@@ -233,6 +265,41 @@ mod tests {
         let absent = "/proc/pressure/cpu";
         allowed(absent);
         denied("/proc/pressure/definitely-not-a-real-file");
+    }
+
+    #[test]
+    fn listing_is_confined_to_the_cgroup_tree() {
+        assert_eq!(check_dir("/sys/fs/cgroup"), Ok(()));
+        assert_eq!(check_dir("/sys/fs/cgroup/system.slice"), Ok(()));
+        assert_eq!(
+            check_dir("/sys/fs/cgroup/kubepods.slice/kubepods-besteffort.slice"),
+            Ok(())
+        );
+        for p in [
+            "/proc",
+            "/proc/1",
+            "/",
+            "/etc",
+            "/home",
+            "/sys/fs",
+            "/sys/fs/cgroupsomething",
+            "/sys/fs/cgroup/../../proc/1",
+            "sys/fs/cgroup",
+        ] {
+            assert!(check_dir(p).is_err(), "should not be listable: {p}");
+        }
+    }
+
+    #[test]
+    fn listing_a_directory_does_not_make_its_files_readable() {
+        // The walk may enumerate any cgroup directory, but a file it turns up is
+        // still subject to `check`, which admits only the known basenames.
+        assert_eq!(check_dir("/sys/fs/cgroup/system.slice/x.scope"), Ok(()));
+        assert!(check("/sys/fs/cgroup/system.slice/x.scope/cgroup.subtree_control").is_err());
+        assert_eq!(
+            check("/sys/fs/cgroup/system.slice/x.scope/memory.current"),
+            Ok(())
+        );
     }
 
     /// No module outside this one may name a forbidden path.

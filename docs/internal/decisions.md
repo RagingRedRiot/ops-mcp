@@ -501,21 +501,41 @@ Three reasons, in order of weight:
   predicted before the use case existed.
 
 **What is not universal: enumeration.** Path layout differs by runtime *and* by
-cgroup driver. Only the first row below is verified; the rest are from
-documentation and should be confirmed against a real host before being relied
-on.
+cgroup driver.
 
-| runtime | cgroup path |
-|---|---|
-| Docker, systemd driver | `system.slice/docker-<id>.scope` (verified) |
-| Docker, cgroupfs driver | `/sys/fs/cgroup/docker/<id>` |
-| podman rootful | `machine.slice/libpod-<id>.scope` |
-| podman rootless | `user.slice/user-<uid>.slice/user@<uid>.service/user.slice/libpod-<id>.scope` |
-| Kubernetes, systemd driver | `kubepods.slice/kubepods-<qos>.slice/kubepods-<qos>-pod<uid>.slice/cri-containerd-<id>.scope` |
+| runtime | cgroup path | status |
+|---|---|---|
+| Docker, systemd driver | `system.slice/docker-<id>.scope` | tested |
+| podman rootless | `user.slice/user-<uid>.slice/user@<uid>.service/user.slice/libpod-<id>.scope` | tested |
+| podman rootful | `machine.slice/libpod-<id>.scope` | untested |
+| Docker, cgroupfs driver | `/sys/fs/cgroup/docker/<id>` | untested |
+| Kubernetes, systemd driver | `kubepods.slice/kubepods-<qos>.slice/kubepods-<qos>-pod<uid>.slice/cri-containerd-<id>.scope` | untested |
 
-Kubernetes also adds a structural level the others lack: a pod slice containing
-several container scopes. Whether the tool reports pods, containers or both is
-**open**.
+**Kubernetes will not be verified here, and that is a deliberate choice.**
+Standing up a cluster purely to claim compatibility is more work than the claim
+is worth, and an unverified claim is worse than an honest gap. The layout above
+is a good-faith reading of the documented convention; it stays marked untested
+until somebody runs it against a real cluster. The README invites exactly that.
+Kubernetes also adds a structural level the others lack — a pod slice containing
+several container scopes — so whether the tools report pods, containers or both
+is **open** and should be settled by someone holding a real cluster rather than
+guessed at here.
+
+**What the podman test established**, against a rootless container on a host
+already running Docker:
+
+* The `libpod-` naming and the deep `user.slice` nesting are both real. The
+  container sat five levels below `/sys/fs/cgroup`, which is why the discovery
+  walk bounds at six rather than the four Docker alone would suggest.
+* The io-delegation caveat below is measured, not inferred: `io.stat` and
+  `io.max` were absent while `io.pressure` was present.
+* **A prefix match alone is not enough.** podman gives each container a sibling
+  `libpod-conmon-<id>.scope` for its monitor process, which strips to
+  `conmon-<id>` and was reported as a second, non-existent container — a
+  phantom in every podman listing, and invisible to any amount of Docker
+  testing. `classify` now requires a hex ID after the prefix, which rejects that
+  scope structurally rather than by special-casing its name, and so should
+  reject comparable infrastructure cgroups from runtimes not yet seen.
 
 Recorded limits, so a future session does not rediscover them:
 
@@ -688,3 +708,90 @@ Recorded limits:
 **Rejected: a `SafePath` newtype with a private constructor.** More machinery
 than two chokepoint functions justify. Worth revisiting if the read surface
 grows beyond them.
+
+### 26. A container is addressed by ID alongside its target — accepted
+
+`container_list(target)` returns the containers on a machine: an ID, the runtime
+that created each, and the process names running inside it.
+`container_health(target, container)` returns one container's contention,
+configured limits and uptime.
+
+**Identity belongs in the listing, not only in the health tool.** Withholding it
+sounds tidier — the listing enumerates, the health tool describes — but it
+forces a model wanting one specific container to call `container_health` on
+every candidate until it finds the right one. Measured on a host of thirteen
+containers, that is thirteen calls returning full metrics against a single
+listing of about 1,700 bytes, and thirteen SSH round trips instead of two once
+the target is remote. The extra reads cost 54 file reads and a few hundred
+microseconds; the names cost roughly 40 bytes per container.
+
+**A second parameter, not a second kind of target.** Decision 7 makes the user's
+SSH config the target inventory, and containers are not in it. A container is a
+thing *on* a target rather than a target of its own, so `target` keeps meaning
+"machine" and remote plus container stays a pair of coordinates instead of a
+flattened namespace.
+
+**Limits are reported by presence.** An absent `limit_bytes` or `limit_cpus`
+means no limit is configured — the fact worth surfacing, since an unlimited
+container can consume the whole machine. A limit that exists but is too low
+shows up instead as `nr_throttled` climbing or `oom_kills` non-zero, so both
+failure modes are visible without the payload judging either. Verified against a
+host whose twelve containers were first entirely unlimited and then limited.
+
+**Enumeration needed a new capability.** Discovery walks the cgroup tree, which
+is the first time this server builds a path it did not have as a literal — the
+case decision 25 anticipated. Listing is guarded separately from reading and
+confined to the cgroup hierarchy, and discovering a directory does not make its
+files readable: every file the walk turns up still goes through the read
+allowlist.
+
+Recorded limits:
+
+* **`pids.max` is usually a large kernel default rather than a deliberate
+  limit**, so a high value there means unset rather than generous.
+* **Container CPU `full` pressure is real**, unlike the host's. Measured at 78%
+  on a quota-throttled container while the host's own `full` figure stayed at a
+  permanent zero — which is why `container_health` reports a full `Pressure` for
+  CPU where `system_health` reports only `some`.
+* **Identity is the distinct `comm` set** in the cgroup, per decision 23. It
+  says what a container is running — `postgres`, `uvicorn`, `redis-server` — not
+  which one it is, and repeats across containers by design.
+
+### 27. Container uptime comes from the cgroup directory's timestamp — accepted
+
+`container_health` reports `uptime_seconds`, derived from the modification time
+of the container's cgroup directory subtracted from the target's own clock.
+
+**It exists because the cumulative figures were unreadable without it.** Every
+`*_total_us` in the payload is monotonic since the cgroup was created, and a
+model shown `full_total_us: 709537` cannot tell whether that is a rounding error
+over four hours or a crisis over four minutes. The averages decay to zero after
+a problem passes, so the totals are the only record that it happened — and a
+record without a denominator is not evidence.
+
+**The timestamp means the current run, not the container's age.** Verified on
+both Docker and podman: stopping a container *deletes* its cgroup directory, and
+starting it again recreates it with the same container ID and a fresh timestamp.
+A stopped container therefore has no cgroup at all, which is also why
+`container_list` never reports one — correct for a health tool.
+
+**The denominator and the numerators share an origin, which is what makes the
+ratio honest.** The PSI totals and `cpu.stat` live inside that same directory
+and reset when it is recreated — measured on both runtimes, where a restarted
+container came back with totals at zero. So `full_total_us` over
+`uptime_seconds` always covers exactly the same span, with no skew to correct
+for.
+
+**Derived from the target's clock, not this server's.** `proc::target_now` is
+boot time plus uptime, differenced against a file timestamp from the same
+machine. Using the local clock would be wrong the moment the reads happen over
+SSH, for the reason decision 19 already gives.
+
+**Guarded by `check_dir` rather than a rule of its own.** Reading a directory's
+metadata reveals strictly less than enumerating it, and the server may already
+enumerate every path this can reach. A third guard rule would have admitted
+exactly the same set while implying the two capabilities could diverge.
+
+Verified against fifteen containers across two hosts and both runtimes: on the
+Docker host every cgroup timestamp matched the runtime's own `StartedAt` to the
+second, and a freshly created rootless podman container reported three seconds.

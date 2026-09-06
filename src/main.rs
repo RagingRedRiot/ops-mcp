@@ -12,6 +12,9 @@
 //! NOTE: stdout is the MCP transport. Never `println!` here. Anything
 //! diagnostic must go to stderr.
 
+mod cgroup;
+mod container_health;
+mod container_list;
 mod guard;
 mod proc;
 mod system_health;
@@ -23,6 +26,8 @@ use rmcp::transport::stdio;
 use rmcp::{ErrorData, ServerHandler, ServiceExt, schemars, tool, tool_handler, tool_router};
 use serde::Deserialize;
 
+use container_health::ContainerHealth;
+use container_list::ContainerList;
 use system_health::SystemHealth;
 use system_info::SystemInfo;
 
@@ -35,6 +40,15 @@ const LOCAL_TARGET: &str = "local";
 struct TargetParams {
     /// Machine to act on. Only "local" is available today.
     target: String,
+}
+
+/// Tools that act on a single container take its ID alongside the target.
+#[derive(Deserialize, schemars::JsonSchema)]
+struct ContainerParams {
+    /// Machine to act on. Only "local" is available today.
+    target: String,
+    /// Container ID, as returned by `container_list`. IDs are stable while a container lives and gone once it exits.
+    container: String,
 }
 
 /// Reject an alias that names no target we know.
@@ -74,6 +88,30 @@ impl StethoscopeMcp {
     ) -> Result<Json<SystemInfo>, ErrorData> {
         check_target(&target)?;
         Ok(Json(system_info::collect(target).await?))
+    }
+
+    #[tool(
+        name = "container_list",
+        description = "The containers on a target machine, by ID, with the runtime that created each. Reads the kernel's cgroup hierarchy rather than asking a container runtime, so it works the same for Docker, podman and Kubernetes and needs no daemon to be running. Returns no container names or images: call container_health for what a container is running."
+    )]
+    async fn container_list(
+        &self,
+        Parameters(TargetParams { target }): Parameters<TargetParams>,
+    ) -> Result<Json<ContainerList>, ErrorData> {
+        check_target(&target)?;
+        Ok(Json(container_list::collect(target).await?))
+    }
+
+    #[tool(
+        name = "container_health",
+        description = "Resource contention and configured limits for one container: CPU use and throttling, memory use against its limit, OOM kills, process count, and kernel pressure-stall figures. Also reports which limits are set at all — an unlimited container can consume the whole machine, and one limited too tightly is throttled or killed while the host itself looks healthy. Raw numbers only, with no thresholds or verdicts applied; the output schema describes how to read them."
+    )]
+    async fn container_health(
+        &self,
+        Parameters(ContainerParams { target, container }): Parameters<ContainerParams>,
+    ) -> Result<Json<ContainerHealth>, ErrorData> {
+        check_target(&target)?;
+        Ok(Json(container_health::collect(target, container).await?))
     }
 
     #[tool(
