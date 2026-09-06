@@ -23,6 +23,8 @@ OUT=$(printf '%s\n' \
   '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"system_info","arguments":{"target":"local"}}}' \
   '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"system_info","arguments":{"target":"nas"}}}' \
   '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"system_health","arguments":{"target":"local"}}}' \
+  '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"container_list","arguments":{"target":"local"}}}' \
+  '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"container_health","arguments":{"target":"local","container":"definitely-not-a-container"}}}' \
   | timeout 10 "$BIN")
 
 reply() { printf '%s' "$OUT" | jq -c "select(.id==$1)"; }
@@ -42,13 +44,15 @@ echo "smoke: $BIN"
 check "server identifies as stethoscope-mcp" \
     "$(reply 1 | jq -r '.result.serverInfo.name')" "stethoscope-mcp"
 
-check "advertises both tools" \
-    "$(reply 2 | jq -r '[.result.tools[].name] | sort | join(",")')" "system_health,system_info"
+check "advertises all four tools" \
+    "$(reply 2 | jq -r '[.result.tools[].name] | sort | join(",")')" \
+    "container_health,container_list,system_health,system_info"
 
-# Every tool takes the same required target (decision 15), so assert it of all
-# of them rather than of whichever happens to be first.
+# Every tool takes a target (decision 15), so assert it of all of them rather
+# than of whichever happens to be first. Tools acting on one container require
+# a container ID as well.
 check "target is required on every tool" \
-    "$(reply 2 | jq -r '[.result.tools[] | .inputSchema.required == ["target"]] | all')" "true"
+    "$(reply 2 | jq -r '[.result.tools[] | .inputSchema.required | index("target") != null] | all')" "true"
 
 check "local target echoes itself back" \
     "$(reply 3 | jq -r '.result.structuredContent.target')" "local"
@@ -82,6 +86,20 @@ check "no verdict fields anywhere in the payload" \
     "$(reply 5 | jq -r '[.result.structuredContent | .. | objects | keys_unsorted[]]
                         | map(select(. == "status" or . == "health" or . == "severity"))
                         | length')" "0"
+
+# Containers are discovered from the cgroup tree, so a host with none is a
+# perfectly good answer — assert the shape, not that anything was found.
+check "container_list returns a count matching its list" \
+    "$(reply 6 | jq -r '.result.structuredContent
+                        | .count == (.containers | length)')" "true"
+
+check "container_list reports no names or images (decision 24)" \
+    "$(reply 6 | jq -r '[.result.structuredContent.containers[]? | keys_unsorted[]]
+                        | map(select(. == "name" or . == "image")) | length')" "0"
+
+# An ID that does not exist is a malformed request, not an unreachable machine.
+check "unknown container is rejected as invalid_params" \
+    "$(reply 7 | jq -r '.error.code')" "-32602"
 
 echo
 if [ "$fail" -eq 0 ]; then

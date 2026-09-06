@@ -154,7 +154,7 @@ pub async fn collect(target: String) -> Result<SystemHealth, ErrorData> {
     // The same file carries boot time, so the target's wall clock costs no
     // extra read: it is boot time plus how long the machine has been up.
     let btime = proc::stat_btime(&stat).ok_or_else(|| proc::parse_error("/proc/stat", "btime"))?;
-    let collected_at = wall_clock(btime, uptime_seconds)
+    let collected_at = proc::wall_clock(btime, uptime_seconds)
         .ok_or_else(|| proc::parse_error("/proc/stat", "boot time out of range"))?;
 
     // /proc/loadavg: three averages, runnable/total tasks, and the PID of the
@@ -206,21 +206,6 @@ pub async fn collect(target: String) -> Result<SystemHealth, ErrorData> {
         },
         pressure: read_pressure().await,
     })
-}
-
-/// The target's own wall clock, as RFC 3339 in UTC.
-///
-/// Boot time plus uptime. Formatted without a fractional part because `btime`
-/// is only recorded to the second, and implying more precision than the source
-/// has would be its own small lie.
-fn wall_clock(btime: u64, uptime_seconds: f64) -> Option<String> {
-    let epoch_seconds = i64::try_from(btime)
-        .ok()?
-        .checked_add(uptime_seconds as i64)?;
-    Some(
-        chrono::DateTime::from_timestamp(epoch_seconds, 0)?
-            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-    )
 }
 
 /// Fraction of CPU time spent doing work since boot.
